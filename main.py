@@ -16,7 +16,8 @@ import paho.mqtt.client as mqtt
 class Listener(stomp.ConnectionListener):
     _mq: stomp.Connection
 
-    def __init__(self, mq: stomp.Connection, mqttBroker, mqttPort, durable=False):
+    def __init__(self, mq: stomp.Connection, settings, durable=False):
+        self.settings=settings
         self._mq = mq
         self.is_durable = durable
         self.SPW5261=False
@@ -32,7 +33,7 @@ class Listener(stomp.ConnectionListener):
         
         self.mqttclient = mqtt.Client()
 
-        self.mqttclient.connect(mqttBroker, mqttPort, 60)
+        self.mqttclient.connect(settings["mqttBroker"], settings["mqttPort"], 60)
         self.mqttclient.loop_start()
 
         self.loadStats()
@@ -163,13 +164,13 @@ class Listener(stomp.ConnectionListener):
                             
                             downLength= currentTime - self.changeTime
                             
-                            downTime=downLength.total_seconds()
+                            downTime=int(downLength.total_seconds())
                             
                             print("Barrier down for "+str(downTime)+", trains: "+str(self.trainList))
                             
                             # add to list
                             self.results.append({
-                                    "timeStamp": str(currentTime),
+                                    "timeStamp": str(currentTime.timestamp()),
                                     "trainList": self.trainList,
                                     "downTime": downTime
                                 })
@@ -190,7 +191,7 @@ class Listener(stomp.ConnectionListener):
                                 newStat["statCount"]=newStat["statCount"]+1
                                 newStat["downTimes"].append({
                                         "downTime": int(downTime),
-                                        "timeStamp": str(currentTime)
+                                        "timeStamp": str(currentTime.timestamp())
                                     })                                
                                 self.stats[curTrain]=newStat
                                 
@@ -200,48 +201,48 @@ class Listener(stomp.ConnectionListener):
                             # save the stats
                             self.saveStats()
                         
-                        elif newDown==True:
-                            # just gone down, so how long will it be down for 
-                            self.avgTime=-1
-                            
-                            for curTrain in self.trainList:
-                                if curTrain in self.stats:
-                                    thisStat = self.stats[curTrain]
-                                    
-                                    thisAvgTime=thisStat["totalTime"]/thisStat["statCount"]
 
-                                    if thisAvgTime>self.avgTime:
-                                        self.avgTime=int(thisAvgTime)
-                                        
-                            if self.avgTime>=0:
-                                print("Average Time: "+str(self.avgTime))
                                 
 
                         self.down= newDown;
                         self.changeTime=currentTime
 
+                    if newDown==True:
+                        # just gone down, so how long will it be down for 
+                        self.avgTime=-1
+                        
+                        for curTrain in self.trainList:
+                            print("looking for train "+str(curTrain))
+                            if curTrain in self.stats:
+                                thisStat = self.stats[curTrain]
+                                print("train "+str(thisStat))
+                                
+                                thisAvgTime=thisStat["totalTime"]/thisStat["statCount"]
+
+                                if thisAvgTime>self.avgTime:
+                                    self.avgTime=int(thisAvgTime)
+                                    
+                        print("Average Time: "+str(self.avgTime))
+                        
                     # republish the current state, we always do this, even on no change
                     # to make sure all are updated about it
                     self.mqttclient.publish("traintrack/woolcrossing", str(self.down).lower())       
                         
                     
                     # and publish more detailed stats
-                    if self.down:
+                    if self.down and self.avgTime>0:
                         
                         # get the time between now and when the state changed, 
                         # then subtract it from how long we expect the state to remain. 
                         diffTime=(currentTime-self.changeTime).total_seconds()
                         timeLeft=self.avgTime - diffTime
                         
-                        print(diffTime)
-                        print(self.avgTime)
-                        
-                        print(timeLeft)
+                        print("Time left: "+str(timeLeft))
                         
                         # and publish the message
                         self.mqttclient.publish("traintrack/timeToOpen", json.dumps(
                                                 {
-                                                    "timeStamp": str(currentTime),
+                                                    "timeStamp": str(currentTime.timestamp()),
                                                     "timeLeft": int(timeLeft)
                                                 }))
       
@@ -254,7 +255,26 @@ class Listener(stomp.ConnectionListener):
         print('received an error {}'.format(frame.body))
 
     def on_disconnected(self):
-        print('disconnected')
+        print('disconnected, reconnecting')
+        # Connect to feed
+        self.connect()
+        
+
+    def connect(self):
+        self._mq.connect(self.settings["username"], self.settings["password"], wait=True)
+
+        # Determine topic to subscribe
+        topic = "/topic/TD_WESS_SIG_AREA"
+    
+        # Subscription
+        subscribe_headers = {
+            "destination": topic,
+            "id": 1,
+        }
+        
+        subscribe_headers["ack"] = "auto"
+    
+        self._mq.subscribe(**subscribe_headers)
 
 
 if __name__ == "__main__":
@@ -266,29 +286,15 @@ if __name__ == "__main__":
     # https://stomp.github.io/stomp-specification-1.2.html#Heart-beating
     # We're committing to sending and accepting heartbeats every 5000ms
     connection = stomp.Connection([('publicdatafeeds.networkrail.co.uk', 61618)], keepalive=True, heartbeats=(5000, 5000))
-    connection.set_listener('', Listener(connection, settings["mqttBroker"], settings["mqttPort"]))
-
-    # Connect to feed
-    connect_headers = {
-        "username": settings["username"],
-        "passcode": settings["password"],
-        "wait": True,
-        }
-
-    connection.connect(**connect_headers)
-
-    # Determine topic to subscribe
-    topic = "/topic/TD_WESS_SIG_AREA"
-
-    # Subscription
-    subscribe_headers = {
-        "destination": topic,
-        "id": 1,
-    }
     
-    subscribe_headers["ack"] = "auto"
+    lst=Listener(connection, settings)
+    
+    connection.set_listener('', lst)
 
-    connection.subscribe(**subscribe_headers)
+    # and connect
+    lst.connect()
 
-    while connection.is_connected():
-        sleep(1)
+
+    while True:
+        sleep(10)
+
