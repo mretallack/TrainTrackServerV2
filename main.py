@@ -166,7 +166,11 @@ class Listener(stomp.ConnectionListener):
                             
                             downTime=int(downLength.total_seconds())
                             
-                            print("Barrier down for "+str(downTime)+", trains: "+str(self.trainList))
+                            errorTime=self.avgTime - downTime
+                        
+                            
+                            print("Barrier down for "+str(downTime)+", avgTime: "+str(self.avgTime)+
+                                        ", error: "+str(errorTime)+", trains: "+str(self.trainList))
                             
                             # add to list
                             self.results.append({
