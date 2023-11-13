@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import time
 import json
 import yaml
 
 from datetime import datetime
 from time import sleep
+
 
 # add in stomp lib
 import stomp
@@ -260,9 +262,20 @@ class Listener(stomp.ConnectionListener):
 
     def on_disconnected(self):
         print('disconnected, reconnecting')
-        # Connect to feed
-        self.connect()
         
+        connected=False
+        
+        while connected==False:
+        
+            try:
+		    	# Connect to feed
+                self.connect()
+                connected=True
+            except stomp.exception.ConnectFailedException as e:
+                print(e)
+                time.sleep(30)
+                pass
+			
 
     def connect(self):
         self._mq.connect(self.settings["username"], self.settings["password"], wait=True)
@@ -296,7 +309,7 @@ if __name__ == "__main__":
     connection.set_listener('', lst)
 
     # and connect
-    lst.connect()
+    lst.on_disconnected()
 
 
     while True:
