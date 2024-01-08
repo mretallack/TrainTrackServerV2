@@ -51,7 +51,7 @@ class Listener(stomp.ConnectionListener):
         while True:
 			
             tmp_downstate=self.downState
-            print("CHECK")
+ 
             if tmp_downstate!=None:
                 print("DOWN: "+str(tmp_downstate))
                 currentTime=datetime.now()
@@ -354,8 +354,9 @@ if __name__ == "__main__":
     
 
     # and connect
-    lst.on_disconnected()
+    #lst.on_disconnected()
 
     while True:
         sleep(10)
-
+        if not connection.is_connected():
+            lst.on_disconnected()
