@@ -3,8 +3,10 @@
 import time
 import json
 import yaml
+import threading
 
 from datetime import datetime
+from datetime import timedelta
 from time import sleep
 
 
@@ -33,6 +35,8 @@ class Listener(stomp.ConnectionListener):
         self.stats={}
         self.avgTime=-1
         
+        self.downState=None
+        
         self.mqttclient = mqtt.Client()
 
         self.mqttclient.connect(settings["mqttBroker"], settings["mqttPort"], 60)
@@ -40,7 +44,39 @@ class Listener(stomp.ConnectionListener):
 
         self.loadStats()
 
+        self.thread = threading.Thread(target=self.thread_function)
+        self.thread.start()
+        
+    def thread_function(self):
+        while True:
+			
+            tmp_downstate=self.downState
+            print("CHECK")
+            if tmp_downstate!=None:
+                print("DOWN: "+str(tmp_downstate))
+                currentTime=datetime.now()
+                timestamp=tmp_downstate["timestamp"]
+                timeLeft=tmp_downstate["timeLeft"]
 
+                # get time between now and when the timestamp was created
+                diffTime=(currentTime-timestamp).total_seconds()
+                # we now know how many seconds to subtract from the timeLeft
+                tmp_timeLeft=timeLeft - diffTime
+                # generate the estimated time up
+                estTimeUp=(currentTime+timedelta(seconds=tmp_timeLeft))
+                print("EST TIME UP: "+str(estTimeUp))
+                     
+
+                # and publish the message
+                self.mqttclient.publish("traintrack/timeToOpen", json.dumps(
+                        {
+                            "timeStamp": str(currentTime.timestamp()),
+                            "timeLeft": int(tmp_timeLeft),
+                            "estTimeUp": str(estTimeUp)
+                        }))  
+                        
+            time.sleep(10) 
+			
     def loadStats(self):
         
         try:
@@ -241,16 +277,23 @@ class Listener(stomp.ConnectionListener):
                         # get the time between now and when the state changed, 
                         # then subtract it from how long we expect the state to remain. 
                         diffTime=(currentTime-self.changeTime).total_seconds()
-                        timeLeft=self.avgTime - diffTime
+                        tmp_timeLeft=self.avgTime - diffTime
                         
-                        print("Time left: "+str(timeLeft))
+                        print("Time left: "+str(tmp_timeLeft))
+                        
+                        self.downState={"timestamp": currentTime,
+                        				"timeLeft": tmp_timeLeft}
+
                         
                         # and publish the message
-                        self.mqttclient.publish("traintrack/timeToOpen", json.dumps(
-                                                {
-                                                    "timeStamp": str(currentTime.timestamp()),
-                                                    "timeLeft": int(timeLeft)
-                                                }))
+                        #self.mqttclient.publish("traintrack/timeToOpen", json.dumps(
+                        #                        {
+                        #                            "timeStamp": str(currentTime.timestamp()),
+                        #                            "timeLeft": int(tmp_timeLeft)
+                        #                        }))
+                    else:
+                     	self.downState = None
+                     	
       
         if self.is_durable:
             # Acknowledging messages is important in client-individual mode
@@ -273,13 +316,13 @@ class Listener(stomp.ConnectionListener):
                 connected=True
             except stomp.exception.ConnectFailedException as e:
                 print(e)
-                time.sleep(30)
+                time.sleep(120)
                 pass
 			
 
     def connect(self):
+        print("ON CONNECT")
         self._mq.connect(self.settings["username"], self.settings["password"], wait=True)
-
         # Determine topic to subscribe
         topic = "/topic/TD_WESS_SIG_AREA"
     
@@ -296,6 +339,7 @@ class Listener(stomp.ConnectionListener):
 
 if __name__ == "__main__":
     
+
     # load in the settings
     with open("settings.yaml") as f:
         settings = yaml.safe_load(f)
@@ -307,10 +351,10 @@ if __name__ == "__main__":
     lst=Listener(connection, settings)
     
     connection.set_listener('', lst)
+    
 
     # and connect
     lst.on_disconnected()
-
 
     while True:
         sleep(10)
