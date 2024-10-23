@@ -5,6 +5,8 @@ import json
 import yaml
 import threading
 
+import socket
+
 from datetime import datetime
 from datetime import timedelta
 from time import sleep
@@ -12,6 +14,7 @@ from time import sleep
 
 # add in stomp lib
 import stomp
+from stomp.exception import ConnectFailedException
 
 # add in the mqtt client
 import paho.mqtt.client as mqtt
@@ -34,6 +37,7 @@ class Listener(stomp.ConnectionListener):
         self.results=[]
         self.stats={}
         self.avgTime=-1
+        self.connection_error_count=1
         
         self.downState=None
         
@@ -49,7 +53,7 @@ class Listener(stomp.ConnectionListener):
         
     def thread_function(self):
         while True:
-			
+
             tmp_downstate=self.downState
  
             if tmp_downstate!=None:
@@ -76,7 +80,7 @@ class Listener(stomp.ConnectionListener):
                         }))  
                         
             time.sleep(10) 
-			
+
     def loadStats(self):
         
         try:
@@ -282,7 +286,7 @@ class Listener(stomp.ConnectionListener):
                         print("Time left: "+str(tmp_timeLeft))
                         
                         self.downState={"timestamp": currentTime,
-                        				"timeLeft": tmp_timeLeft}
+                                       "timeLeft": tmp_timeLeft}
 
                         
                         # and publish the message
@@ -292,8 +296,8 @@ class Listener(stomp.ConnectionListener):
                         #                            "timeLeft": int(tmp_timeLeft)
                         #                        }))
                     else:
-                     	self.downState = None
-                     	
+                        self.downState = None
+                   
       
         if self.is_durable:
             # Acknowledging messages is important in client-individual mode
@@ -301,44 +305,61 @@ class Listener(stomp.ConnectionListener):
 
 
     def on_error(self, frame):
-        print('received an error {}'.format(frame.body))
+        print('received an error {}'.format(frame))
 
-    def on_disconnected(self):
-        print('disconnected, reconnecting')
-        
-        connected=False
-        
-        while connected==False:
-        
-            try:
-		    	# Connect to feed
-                self.connect()
-                connected=True
-            except stomp.exception.ConnectFailedException as e:
-                print(e)
-                time.sleep(120)
-                pass
-			
 
-    def connect(self):
-        print("ON CONNECT")
-        self._mq.connect(self.settings["username"], self.settings["password"], wait=True)
+    def on_connected(self, frame):
+        print("Connected callback")        
         # Determine topic to subscribe
         topic = "/topic/TD_WESS_SIG_AREA"
     
+
+        CLIENT_ID = socket.getfqdn()
+
+        subscribe_header = {'activemq.subscriptionName': CLIENT_ID}
+
         # Subscription
-        subscribe_headers = {
+        subscribe_args = {
             "destination": topic,
             "id": 1,
+            "headers": subscribe_header
         }
         
-        subscribe_headers["ack"] = "auto"
-    
-        self._mq.subscribe(**subscribe_headers)
+        subscribe_args["ack"] = "auto"
+        print("subscribing")
+        self._mq.subscribe(**subscribe_args)
+        print("subscribed")
 
+
+
+    def on_disconnected(self):
+        print('disconnected')
+        
+
+    def connect(self):
+        print("Performing Connect")
+
+
+        CLIENT_ID = socket.getfqdn()
+
+
+        connect_header = {'client-id': self.settings["username"] + '-' + CLIENT_ID}
+
+        try:
+
+            self._mq.connect(self.settings["username"], 
+                        self.settings["password"], 
+                        wait=True,
+                        headers=connect_header)
+            print("Connected")
+
+        except ConnectFailedException as e:
+            print(f"Connection failed {e}")
 
 if __name__ == "__main__":
-    
+
+    if stomp.__version__[0] < 5:
+        print("WARNING old STOMP version")
 
     # load in the settings
     with open("settings.yaml") as f:
@@ -346,17 +367,32 @@ if __name__ == "__main__":
         
     # https://stomp.github.io/stomp-specification-1.2.html#Heart-beating
     # We're committing to sending and accepting heartbeats every 5000ms
-    connection = stomp.Connection([('publicdatafeeds.networkrail.co.uk', 61618)], keepalive=True, heartbeats=(5000, 5000))
+    connection = stomp.Connection([('publicdatafeeds.networkrail.co.uk', 61618)], 
+                                auto_decode=False,
+                                heartbeats=(5000, 5000))
     
     lst=Listener(connection, settings)
     
     connection.set_listener('', lst)
     
-
-    # and connect
-    #lst.on_disconnected()
-
     while True:
         sleep(10)
-        if not connection.is_connected():
-            lst.on_disconnected()
+
+        connection_error_count=1
+        
+        while not connection.is_connected():
+            # try to connect
+            print("performing connection")
+            lst.connect()
+            sleeptime=60 * connection_error_count
+            print(f'waiting for {sleeptime} seconds')
+            time.sleep(sleeptime)
+
+            # see if we now have a connection
+            if not connection.is_connected():
+                # no connection, so retry but increment the delay
+                print("Connection failed")
+                connection_error_count=connection_error_count*2
+                if connection_error_count>50:
+                    connection_error_count=50                  
+                
